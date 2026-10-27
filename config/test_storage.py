@@ -65,6 +65,18 @@ class VercelBlobStorageTests(SimpleTestCase):
         self.assertEqual(storage.url('cours/1/a.pdf'),
                          'https://store123.public.blob.vercel-storage.com/cours/1/a.pdf')
 
+    def test_store_id_from_environment_is_normalized(self):
+        with mock.patch.dict('os.environ', {'BLOB_STORE_ID': 'store_abc123',
+                                            'BLOB_READ_WRITE_TOKEN': ''}, clear=False):
+            storage = VercelBlobStorage()
+            self.assertEqual(storage.url('cours/1/a.pdf'),
+                             'https://abc123.public.blob.vercel-storage.com/cours/1/a.pdf')
+
+    def test_access_mode_comes_from_the_environment(self):
+        with mock.patch.dict('os.environ', {'BLOB_ACCESS': 'private'}, clear=False):
+            self.assertEqual(VercelBlobStorage().access, 'private')
+        self.assertEqual(VercelBlobStorage().access, 'public')
+
     def test_save_without_credentials_raises_a_readable_error(self):
         with mock.patch.dict('os.environ', {'BLOB_READ_WRITE_TOKEN': '', 'BLOB_STORE_ID': ''}, clear=False):
             storage = VercelBlobStorage()
@@ -75,13 +87,21 @@ class VercelBlobStorageTests(SimpleTestCase):
 
 class DefaultMediaStorageTests(SimpleTestCase):
     def test_local_filesystem_when_nothing_is_configured(self):
-        with mock.patch.dict('os.environ', {'BLOB_READ_WRITE_TOKEN': '', 'AWS_STORAGE_BUCKET_NAME': '',
+        with mock.patch.dict('os.environ', {'BLOB_READ_WRITE_TOKEN': '', 'BLOB_STORE_ID': '',
+                                           'AWS_STORAGE_BUCKET_NAME': '',
                                            'AWS_ACCESS_KEY_ID': ''}, clear=False):
             self.assertEqual(default_media_storage()['BACKEND'],
                              'django.core.files.storage.FileSystemStorage')
 
     def test_vercel_blob_when_a_token_is_present(self):
         with mock.patch.dict('os.environ', {'BLOB_READ_WRITE_TOKEN': 'vercel_blob_rw_store_secret'}, clear=False):
+            backend = default_media_storage()
+        self.assertEqual(backend['BACKEND'], 'config.storage.VercelBlobStorage')
+
+    def test_vercel_blob_when_only_the_store_id_is_present(self):
+        """Sur Vercel, BLOB_STORE_ID suffit (authentification OIDC)."""
+        env = {'BLOB_STORE_ID': 'store_abc123', 'BLOB_READ_WRITE_TOKEN': ''}
+        with mock.patch.dict('os.environ', env, clear=False):
             backend = default_media_storage()
         self.assertEqual(backend['BACKEND'], 'config.storage.VercelBlobStorage')
 

@@ -12,7 +12,7 @@ Ce module fournit :
 
 Priorité de sélection :
 
-1. ``BLOB_READ_WRITE_TOKEN`` (ou ``VERCEL_BLOB_READ_WRITE_TOKEN``) → Vercel Blob ;
+1. ``BLOB_STORE_ID`` (jeton OIDC Vercel) ou ``BLOB_READ_WRITE_TOKEN`` → Vercel Blob ;
 2. ``AWS_STORAGE_BUCKET_NAME`` + ``AWS_ACCESS_KEY_ID`` → stockage S3 compatible ;
 3. sinon → ``FileSystemStorage`` (développement local).
 """
@@ -33,7 +33,8 @@ _BLOB_TOKEN_RE = re.compile(r'^vercel_blob_rw_(?P<store>[A-Za-z0-9]+)_')
 #: Message affiché quand le stockage objet n'est pas configuré sur l'hébergeur.
 BLOB_NOT_CONFIGURED = (
     "Le stockage des documents n'est pas configuré sur cet environnement. "
-    "Définissez BLOB_READ_WRITE_TOKEN (Vercel Blob) pour pouvoir joindre des documents."
+    "Définissez BLOB_STORE_ID (Vercel Blob) ou BLOB_READ_WRITE_TOKEN "
+    "pour pouvoir joindre des documents."
 )
 
 
@@ -47,10 +48,13 @@ class VercelBlobStorage(Storage):
 
     Les noms de fichiers conservent leur forme habituelle (``cours/12/abc.pdf``) ;
     les URL publiques sont construites à partir de l'identifiant du store.
+
+    L'authentification utilise le jeton OIDC de la plateforme (``BLOB_STORE_ID``)
+    ou, en dehors de Vercel, un jeton de lecture/écriture (``BLOB_READ_WRITE_TOKEN``).
     """
 
-    def __init__(self, access='public', location='', base_url=None, **kwargs):
-        self.access = access
+    def __init__(self, access=None, location='', base_url=None, **kwargs):
+        self.access = (access or os.environ.get('BLOB_ACCESS') or 'public').strip() or 'public'
         self.location = (location or '').strip('/')
         self._base_url = base_url
 
@@ -63,7 +67,7 @@ class VercelBlobStorage(Storage):
     def _store_id(self):
         store = (os.environ.get('BLOB_STORE_ID') or '').strip()
         if store:
-            return store
+            return store.removeprefix('store_').strip()
         match = _BLOB_TOKEN_RE.match(self._token())
         if not match:
             raise MediaStorageError(BLOB_NOT_CONFIGURED)
@@ -141,8 +145,10 @@ class VercelBlobStorage(Storage):
 
 def default_media_storage():
     """Renvoie la configuration ``STORAGES['default']`` adaptée à l'environnement."""
-    if os.environ.get('BLOB_READ_WRITE_TOKEN') or os.environ.get('VERCEL_BLOB_READ_WRITE_TOKEN'):
-        return {'BACKEND': 'config.storage.VercelBlobStorage', 'OPTIONS': {'access': 'public'}}
+    if (os.environ.get('BLOB_STORE_ID')
+            or os.environ.get('BLOB_READ_WRITE_TOKEN')
+            or os.environ.get('VERCEL_BLOB_READ_WRITE_TOKEN')):
+        return {'BACKEND': 'config.storage.VercelBlobStorage'}
     if os.environ.get('AWS_STORAGE_BUCKET_NAME') and os.environ.get('AWS_ACCESS_KEY_ID'):
         options = {
             'bucket_name': os.environ['AWS_STORAGE_BUCKET_NAME'],

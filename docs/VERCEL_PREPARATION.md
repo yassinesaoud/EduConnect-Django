@@ -17,8 +17,9 @@ restent inchangés.
 | `GEMINI_API_KEY` | Facultative, dans `.env` ou l'environnement | Secret de l'environnement concerné ; l'IA reste optionnelle |
 | `GEMINI_MODEL` | Défaut existant : `gemini-2.5-flash` | Même valeur par défaut, configurable |
 | `PEDAGOGIE_GEMINI_MODEL` | Défaut existant : `gemini-3.1-flash-lite` | Même valeur par défaut, configurable |
-| `BLOB_READ_WRITE_TOKEN` | Absente : stockage local dans `media/` | Obligatoire pour joindre des documents : jeton d'un Blob Store Vercel public |
-| `BLOB_STORE_ID` | Absente | Facultative : déduite du jeton si elle est absente |
+| `BLOB_STORE_ID` | Absente : stockage local dans `media/` | Obligatoire pour joindre des documents : identifiant du Blob Store Vercel (authentification OIDC de la plateforme) |
+| `BLOB_READ_WRITE_TOKEN` | Absente | Facultative hors Vercel : jeton `vercel_blob_rw_<store_id>_<secret>` ; sur Vercel, `BLOB_STORE_ID` suffit |
+| `BLOB_ACCESS` | `public` | `public` ou `private` selon le mode d'accès du Blob Store |
 | `AWS_STORAGE_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_ENDPOINT_URL` | Absentes | Alternative facultative : stockage compatible S3 (Cloudflare R2, MinIO…) |
 | `VERCEL`, `VERCEL_URL` | Non nécessaires | Variables système Vercel ; le domaine de `VERCEL_URL` est ajouté aux hôtes et origines CSRF |
 
@@ -60,7 +61,7 @@ sauvegarde d'un cours auquel on joint un document renvoyait donc une erreur
 
 | Environnement | Backend retenu | Condition |
 | --- | --- | --- |
-| Vercel / production | `config.storage.VercelBlobStorage` | `BLOB_READ_WRITE_TOKEN` (ou `VERCEL_BLOB_READ_WRITE_TOKEN`) défini |
+| Vercel / production | `config.storage.VercelBlobStorage` | `BLOB_STORE_ID` (OIDC Vercel) ou `BLOB_READ_WRITE_TOKEN` défini |
 | Vercel / production | `storages.backends.s3boto3.S3Boto3Storage` | `AWS_STORAGE_BUCKET_NAME` + `AWS_ACCESS_KEY_ID` définis |
 | Local | `django.core.files.storage.FileSystemStorage` | aucune variable définie |
 
@@ -71,6 +72,12 @@ les URL publiques sont construites à partir de l'identifiant du store
 sont servis par la vue `pedagogie:support_download`, qui contrôle les droits
 avant de lire le blob : le store peut rester public sans exposer les documents
 masqués.
+
+Sur Vercel, l'authentification passe par le jeton OIDC de la plateforme : le
+seul `BLOB_STORE_ID` suffit et aucun secret de lecture/écriture n'est stocké
+dans les variables d'environnement. `BLOB_WEBHOOK_PUBLIC_KEY` sert
+uniquement à vérifier la signature des webhooks Vercel Blob et ne permet pas
+d'écrire dans le store.
 
 À défaut de stockage configuré, une erreur d'écriture n'est plus une erreur
 500 : elle est convertie en message lisible affiché dans le formulaire
