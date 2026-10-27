@@ -16,6 +16,7 @@ from django.views.generic import CreateView, DeleteView, DetailView, ListView, U
 
 from accounts.roles import is_admin
 from config.mixins import QueryStringMixin
+from config.storage import MediaStorageError, media_error_message
 
 from .forms import CoursForm, ExerciceForm, QuestionQCMFormSet, ChapitreFormSet, ImportCoursForm
 from .models import Cours, Exercice, SupportCours, TentativeExercice, ParticipationExercice
@@ -23,6 +24,19 @@ from .learning import exercise_questions, exercise_revision
 from .grading import save_submission, SubmissionError
 from .office import export_course
 from .visibility import visible_courses, visible_chapters, visible_exercises, manages_course, can_read_support
+
+
+def _cleanup_saved_files(saved_files):
+    """Supprime les fichiers déjà écrits sans masquer l'erreur d'origine."""
+    for file in saved_files:
+        try:
+            file.delete(save=False)
+        except Exception:
+            pass
+
+
+class _MediaSaveError(Exception):
+    """Erreur d'enregistrement d'un document, déjà traduite pour l'utilisateur."""
 
 
 class OwnerOrAdminMixin:
@@ -175,14 +189,23 @@ class CoursChapitresMixin:
                 self.object.exercices.exclude(chapitre_id__in=[c['id'] for c in chapters]).update(chapitre_id='')
                 self.object.supports.exclude(chapitre_id__in=[c['id'] for c in chapters]).update(chapitre_id='')
                 uploads = [('', upload) for upload in form.cleaned_data.get('fichiers', [])] + chapter_uploads
-                for identity, upload in uploads:
-                    support = SupportCours(cours=self.object, nom=upload.name, chapitre_id=identity)
-                    support.fichier.save(upload.name, upload, save=False)
-                    saved_files.append(support.fichier)
-                    support.save()
+                try:
+                    for identity, upload in uploads:
+                        support = SupportCours(cours=self.object, nom=upload.name, chapitre_id=identity)
+                        support.fichier.save(upload.name, upload, save=False)
+                        saved_files.append(support.fichier)
+                        support.save()
+                except (MediaStorageError, OSError) as exc:
+                    # Le stockage est indisponible (système de fichiers en lecture seule sur
+                    # Vercel, blob non configuré, quota dépassé...) : on remonte une erreur
+                    # lisible au lieu d'une erreur 500.
+                    raise _MediaSaveError(media_error_message(exc)) from exc
+        except _MediaSaveError as exc:
+            _cleanup_saved_files(saved_files)
+            form.add_error(None, str(exc))
+            return self.form_invalid(form)
         except Exception:
-            for file in saved_files:
-                file.delete(save=False)
+            _cleanup_saved_files(saved_files)
             raise
         messages.success(self.request, 'Cours enregistré.')
         return response
@@ -204,12 +227,18 @@ class CoursImportView(PermissionRequiredMixin, FormView):
                         matiere=form.cleaned_data['matiere'], niveau=form.cleaned_data['niveau'],
                         contenu=intro, chapitres=chapters, enseignant=self.request.user)
                     support = SupportCours(cours=course, nom=upload.name)
-                    support.fichier.save(upload.name, upload, save=False)
+                    try:
+                        support.fichier.save(upload.name, upload, save=False)
+                    except (MediaStorageError, OSError) as exc:
+                        raise _MediaSaveError(media_error_message(exc)) from exc
                     saved_files.append(support.fichier)
                     support.save()
+        except _MediaSaveError as exc:
+            _cleanup_saved_files(saved_files)
+            form.add_error(None, str(exc))
+            return self.form_invalid(form)
         except Exception:
-            for file in saved_files:
-                file.delete(save=False)
+            _cleanup_saved_files(saved_files)
             raise
         messages.success(self.request, f'{len(form.documents)} cours importé(s). Vous pouvez maintenant les modifier et ajouter des exercices par chapitre.')
         return super().form_valid(form)

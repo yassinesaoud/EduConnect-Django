@@ -5,3 +5,5 @@ pypdf>=5,<7
 beautifulsoup4>=4.12,<5
 reportlab>=4,<6
 Pillow>=10,<13
+vercel-blob>=0.5,<1
+django-storages[s3]>=1.14,<2

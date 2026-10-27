@@ -124,6 +124,18 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = '/media/'
+
+# Stockage des documents de cours.
+# Sur Vercel le système de fichiers est en lecture seule : on bascule donc
+# automatiquement vers un stockage objet (Vercel Blob / S3) quand il est configuré.
+# Voir config/storage.py pour le détail.
+from config.storage import default_media_storage  # noqa: E402
+
+STORAGES = {
+    'default': default_media_storage(),
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
