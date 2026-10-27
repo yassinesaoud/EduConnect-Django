@@ -1,51 +1,26 @@
 """Tests du backend de stockage des médias (Vercel Blob / S3 / disque local)."""
 import errno
-from types import SimpleNamespace
 from unittest import mock
 
 from django.core.files.base import ContentFile
 from django.test import SimpleTestCase
 
+from config.blob_fakes import FakeBlobSdk
 from config.storage import (BLOB_NOT_CONFIGURED, MediaStorageError, VercelBlobStorage,
                             default_media_storage, media_error_message)
 
 
 class VercelBlobStorageTests(SimpleTestCase):
     def setUp(self):
-        self.stored = {}
-        self.sdk = SimpleNamespace(
-            put_blob=mock.Mock(side_effect=self._put_blob),
-            get_blob=mock.Mock(side_effect=self._get_blob),
-            delete_blob=mock.Mock(side_effect=self._delete_blob),
-            head_blob=mock.Mock(side_effect=self._head_blob),
-        )
+        self.sdk = FakeBlobSdk()
         self.env = mock.patch.dict('os.environ', {
             'BLOB_READ_WRITE_TOKEN': 'vercel_blob_rw_store123_secret',
         }, clear=False)
         self.env.start()
         self.addCleanup(self.env.stop)
-        patcher = mock.patch('vercel.blob.sync', self.sdk)
+        patcher = self.sdk.patch()
         patcher.start()
         self.addCleanup(patcher.stop)
-
-    # -- faux store -------------------------------------------------------
-    def _put_blob(self, pathname, body, **kwargs):
-        self.stored[pathname] = body
-        return SimpleNamespace(
-            url=f'https://store.public.blob.vercel-storage.com/{pathname}', pathname=pathname)
-
-    def _get_blob(self, pathname, **kwargs):
-        if pathname not in self.stored:
-            raise OSError('missing')
-        return SimpleNamespace(body=self.stored[pathname])
-
-    def _delete_blob(self, pathname, **kwargs):
-        self.stored.pop(pathname, None)
-
-    def _head_blob(self, pathname, **kwargs):
-        if pathname not in self.stored:
-            raise OSError('missing')
-        return SimpleNamespace(size=len(self.stored[pathname]))
 
     def test_save_uses_the_blob_pathname(self):
         storage = VercelBlobStorage()

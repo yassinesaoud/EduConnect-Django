@@ -6,6 +6,7 @@ lecture seule, toute écriture de document échouait avec
 ``OSError: [Errno 30] Read-only file system``.
 """
 from io import BytesIO
+from unittest import mock
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -17,6 +18,7 @@ from django.urls import reverse
 from reportlab.pdfgen import canvas
 
 from accounts.roles import ensure_system_roles, TEACHER
+from config.blob_fakes import FakeBlobSdk
 from .models import Cours, SupportCours
 
 
@@ -110,3 +112,68 @@ class CourseUpdateDocumentTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.course.refresh_from_db()
         self.assertEqual(self.course.titre, 'Nouveau titre')
+
+
+BLOB_STORAGES = {
+    'default': {'BACKEND': 'config.storage.VercelBlobStorage', 'OPTIONS': {'access': 'public'}},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+}
+
+
+class CourseUpdateBlobStorageTests(TestCase):
+    """Enregistrement d'un cours avec document via Vercel Blob (chemin nominal)."""
+
+    def setUp(self):
+        ensure_system_roles()
+        self.teacher = get_user_model().objects.create_user(username='teacher')
+        self.teacher.groups.add(Group.objects.get(name=TEACHER))
+        self.chapter_id = str(uuid4())
+        self.course = Cours.objects.create(
+            titre='Mon cours', description='Description', matiere='Maths', niveau='debutant',
+            contenu='Introduction', enseignant=self.teacher,
+            chapitres=[{'id': self.chapter_id, 'titre': 'Chapitre 1',
+                        'contenu': '<p>Contenu</p>', 'masque': False}])
+        self.client.force_login(self.teacher)
+        self.blob = FakeBlobSdk()
+        self.env = mock.patch.dict('os.environ', {
+            'BLOB_READ_WRITE_TOKEN': 'vercel_blob_rw_fakestore_secret',
+        }, clear=False)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def payload(self, **extra):
+        data = {
+            'titre': 'Mon cours', 'description': 'Description', 'matiere': 'Maths',
+            'niveau': 'debutant', 'contenu': 'Introduction',
+            'chapitres-TOTAL_FORMS': '1', 'chapitres-INITIAL_FORMS': '1',
+            'chapitres-MIN_NUM_FORMS': '0', 'chapitres-MAX_NUM_FORMS': '100',
+            'chapitres-0-id': self.chapter_id,
+            'chapitres-0-titre': 'Chapitre 1', 'chapitres-0-contenu': '<p>Contenu</p>',
+        }
+        data.update(extra)
+        return data
+
+    @override_settings(STORAGES=BLOB_STORAGES)
+    def test_document_is_stored_in_the_blob_store(self):
+        document = SimpleUploadedFile('support.pdf', build_pdf(), content_type='application/pdf')
+        with self.blob.patch():
+            response = self.client.post(
+                reverse('pedagogie:cours_update', args=[self.course.pk]),
+                self.payload(fichiers=document))
+        self.assertEqual(response.status_code, 302)
+        support = SupportCours.objects.get()
+        self.assertTrue(support.fichier.name.startswith(f'cours/{self.course.pk}/'))
+        self.assertTrue(support.fichier.name.endswith('.pdf'))
+        self.assertIn(support.fichier.name, self.blob.stored)
+
+    @override_settings(STORAGES=BLOB_STORAGES)
+    def test_stored_document_can_be_downloaded_again(self):
+        content = build_pdf()
+        document = SimpleUploadedFile('support.pdf', content, content_type='application/pdf')
+        with self.blob.patch():
+            self.client.post(reverse('pedagogie:cours_update', args=[self.course.pk]),
+                             self.payload(fichiers=document))
+            support = SupportCours.objects.get()
+            response = self.client.get(reverse('pedagogie:support_download', args=[support.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b''.join(response.streaming_content), content)
