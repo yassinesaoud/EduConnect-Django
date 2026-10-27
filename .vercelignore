@@ -1,0 +1,15 @@
+.env
+.env.*
+*.sqlite*
+*.db
+local_settings.py
+*.log
+media/
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+coaching/audit_artifacts/
+staticfiles/
+static_collected/

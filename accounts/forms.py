@@ -1,11 +1,12 @@
 from django import forms
 from django.contrib.auth.forms import AuthenticationForm, PasswordChangeForm, UserCreationForm
 from django.contrib.auth.models import Group, Permission, User
+from django.db import transaction
 from django.db.models import Q
 
 from config.forms import BootstrapFormMixin
 
-from .roles import LEARNER, SYSTEM_ROLES
+from .roles import LEARNER, SYSTEM_ROLES, ensure_system_roles
 
 PERM_MODELS = [('auth', 'user'), ('auth', 'group'), ('pedagogie', 'cours'), ('pedagogie', 'exercice'), ('objectifs', 'objectifapprentissage'), ('objectifs', 'tacheapprentissage'), ('ressources', 'categorie'), ('ressources', 'ressource'), ('coaching', 'sessioncoaching'), ('coaching', 'conseilpedagogique')]
 ACTIONS = {'add': 'Ajouter', 'change': 'Modifier', 'delete': 'Supprimer', 'view': 'Consulter'}
@@ -25,9 +26,17 @@ class RegisterForm(BootstrapFormMixin, UserCreationForm):
         self.fields['email'].required = True
 
     def save(self, commit=True):
-        user = super().save(commit)
-        user.groups.add(Group.objects.get(name=LEARNER))
-        return user
+        if not commit:
+            return super().save(commit=False)
+
+        # Bootstrap roles before saving the account. Keep account creation and
+        # group assignment in one transaction so a failed assignment rolls back.
+        with transaction.atomic():
+            ensure_system_roles()
+            learner_group = Group.objects.get(name=LEARNER)
+            user = super().save(commit=True)
+            user.groups.add(learner_group)
+            return user
 
 
 class UserCreateForm(BootstrapFormMixin, UserCreationForm):

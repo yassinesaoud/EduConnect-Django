@@ -10,22 +10,78 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import os
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
+
+from config.storage import default_media_storage
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+ON_VERCEL = os.environ.get('VERCEL') == '1'
+
+# Local development only; platform environment variables always take priority.
+_local_env = BASE_DIR / '.env'
+if not ON_VERCEL and _local_env.is_file():
+    _env_keys = {
+        'DJANGO_SECRET_KEY', 'DJANGO_DEBUG', 'DJANGO_ALLOWED_HOSTS',
+        'DJANGO_CSRF_TRUSTED_ORIGINS', 'DATABASE_URL',
+        'GEMINI_API_KEY', 'GEMINI_MODEL', 'PEDAGOGIE_GEMINI_MODEL',
+        'BLOB_READ_WRITE_TOKEN', 'BLOB_STORE_ID',
+        'AWS_STORAGE_BUCKET_NAME', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+        'AWS_S3_ENDPOINT_URL', 'AWS_S3_REGION_NAME',
+    }
+    for _line in _local_env.read_text(encoding='utf-8-sig').splitlines():
+        if _line.strip() and not _line.lstrip().startswith('#') and '=' in _line:
+            _key, _value = _line.split('=', 1)
+            if _key.strip() in _env_keys:
+                os.environ.setdefault(_key.strip(), _value.strip().strip('"').strip("'"))
+
+
+def _env_bool(name, default):
+    value = os.environ.get(name, str(default)).strip().lower()
+    if value not in ('true', 'false', '1', '0', 'yes', 'no', 'on', 'off'):
+        raise ImproperlyConfigured(f'{name} doit être un booléen.')
+    return value in ('true', '1', 'yes', 'on')
+
+
+def _env_list(name, default=''):
+    return list(dict.fromkeys(value.strip() for value in os.environ.get(name, default).split(',') if value.strip()))
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-+k9coov19&n(6uf()n&+_rtbd9hp$04t5wd5f(&fthzn$44rsi'
+# Never expose Django debug pages from a Vercel deployment.
+DEBUG = False if ON_VERCEL else _env_bool('DJANGO_DEBUG', True)
+_production = ON_VERCEL or not DEBUG
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '').strip()
+if not SECRET_KEY and not _production:
+    SECRET_KEY = 'django-insecure-+k9coov19&n(6uf()n&+_rtbd9hp$04t5wd5f(&fthzn$44rsi'
+if _production and (len(SECRET_KEY) < 50 or len(set(SECRET_KEY)) < 5 or SECRET_KEY.startswith('django-insecure-')):
+    raise ImproperlyConfigured('Définissez DJANGO_SECRET_KEY avec une clé aléatoire sécurisée (au moins 50 caractères).')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]' if DEBUG else '')
+CSRF_TRUSTED_ORIGINS = _env_list('DJANGO_CSRF_TRUSTED_ORIGINS')
+_vercel_host = urlsplit('https://' + os.environ.get('VERCEL_URL', '').strip()).hostname
+if ON_VERCEL and _vercel_host:
+    if _vercel_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_vercel_host)
+    if f'https://{_vercel_host}' not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(f'https://{_vercel_host}')
 
-ALLOWED_HOSTS = []
+SESSION_COOKIE_SECURE = _production
+CSRF_COOKIE_SECURE = _production
+SECURE_SSL_REDIRECT = _production
+# Vercel terminates TLS and supplies the trusted forwarding header.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if ON_VERCEL else None
+SECURE_HSTS_SECONDS = 0  # Enable only after validating the final HTTPS domains.
 
 
 # Application definition
@@ -47,6 +103,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -86,6 +143,23 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+_database_url = os.environ.get('DATABASE_URL', '').strip()
+if ON_VERCEL and not _database_url:
+    raise ImproperlyConfigured('DATABASE_URL PostgreSQL est obligatoire sur Vercel.')
+if _database_url:
+    try:
+        _database = dj_database_url.parse(
+            _database_url, conn_max_age=0, conn_health_checks=True,
+            ssl_require=_production,
+        )
+    except (ValueError, KeyError) as error:
+        raise ImproperlyConfigured('DATABASE_URL PostgreSQL est invalide.') from None
+    if _database['ENGINE'] != 'django.db.backends.postgresql':
+        raise ImproperlyConfigured('DATABASE_URL doit désigner une base PostgreSQL.')
+    _database.setdefault('OPTIONS', {}).setdefault('connect_timeout', 10)
+    if ON_VERCEL:
+        _database['DISABLE_SERVER_SIDE_CURSORS'] = True  # Transaction pooler compatibility.
+    DATABASES['default'] = _database
 
 
 # Password validation
@@ -126,23 +200,24 @@ STATIC_URL = 'static/'
 MEDIA_ROOT = BASE_DIR / 'media'
 MEDIA_URL = '/media/'
 
-# Stockage des documents de cours.
-# Sur Vercel le système de fichiers est en lecture seule : on bascule donc
-# automatiquement vers un stockage objet (Vercel Blob / S3) quand il est configuré.
-# Voir config/storage.py pour le détail.
-from config.storage import default_media_storage  # noqa: E402
-
-STORAGES = {
-    'default': default_media_storage(),
-    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
-}
-
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 STATICFILES_DIRS = [BASE_DIR / 'static']
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    # Sur Vercel le systeme de fichiers est en lecture seule : le stockage des
+    # documents bascule automatiquement sur Vercel Blob ou un stockage S3
+    # compatible des que les variables d'environnement correspondantes sont
+    # presentes (voir config/storage.py).
+    'default': default_media_storage(),
+    'staticfiles': {'BACKEND': (
+        'whitenoise.storage.CompressedManifestStaticFilesStorage' if _production
+        else 'django.contrib.staticfiles.storage.StaticFilesStorage'
+    )},
+}
 
 # Authentification (toutes les pages exigent une connexion sauf celles marquées @login_not_required)
 LOGIN_URL = 'accounts:login'
@@ -156,15 +231,7 @@ import time
 ASSET_VERSION = int(time.time())  # change à chaque démarrage : évite les CSS/JS en cache
 
 
-# Configuration locale côté serveur : ne jamais exposer la clé dans les templates.
-import os
-_local_env = BASE_DIR / '.env'
-if _local_env.exists():
-    for _line in _local_env.read_text(encoding='utf-8').splitlines():
-        if _line.strip() and not _line.lstrip().startswith('#') and '=' in _line:
-            _key, _value = _line.split('=', 1)
-            if _key.strip() in ('GEMINI_API_KEY', 'GEMINI_MODEL', 'PEDAGOGIE_GEMINI_MODEL'):
-                os.environ.setdefault(_key.strip(), _value.strip().strip('"').strip("'"))
+# Server-side configuration; local .env is loaded above, never on Vercel.
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')
 PEDAGOGIE_GEMINI_MODEL = os.environ.get('PEDAGOGIE_GEMINI_MODEL', 'gemini-3.1-flash-lite')

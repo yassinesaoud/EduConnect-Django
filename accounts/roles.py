@@ -1,4 +1,7 @@
+from django.apps import apps
+from django.contrib.auth.management import create_permissions
 from django.contrib.auth.models import Group, Permission
+from django.db import transaction
 
 ADMIN = 'Administrateur'
 TEACHER = 'Enseignant / Coach'
@@ -15,8 +18,14 @@ def _perms(models, actions):
     return Permission.objects.filter(codename__in=codes, content_type__app_label__in=['auth', 'pedagogie', 'objectifs', 'ressources'])
 
 
+@transaction.atomic
 def ensure_system_roles():
     """Crée les 3 rôles système (une seule fois) avec leurs permissions par défaut."""
+    # Also support callers outside `migrate`, such as registration and the
+    # explicit initialization command. Permission creation is idempotent.
+    for label in ('auth', 'pedagogie', 'objectifs', 'coaching', 'ressources'):
+        create_permissions(apps.get_app_config(label), verbosity=0)
+
     crud = ('add', 'change', 'delete', 'view')
     defaults = {
         ADMIN: _perms(['user', 'group', 'cours', 'exercice', 'objectifapprentissage', 'tacheapprentissage', 'categorie', 'ressource'], crud),

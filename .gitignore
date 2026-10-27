@@ -18,6 +18,7 @@ venv/
 .venv/
 ENV/
 .env
+.env.neon
 
 # IDE
 .vscode/
@@ -37,3 +38,4 @@ static_collected/
 dist/
 build/
 *.egg-info/
+.neon
